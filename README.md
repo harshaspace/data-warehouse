@@ -1,117 +1,129 @@
 # data-warehouse
-BigQuery data warehouse
 
+BigQuery data warehouse for yellow taxi trip data analysis.
+
+## Setup and Data Structures
 
 ### Create external table from yellow taxi data
 
-"""
-
+```sql
 CREATE OR REPLACE EXTERNAL TABLE `curious-helix-484819-a6.taxi_dataset.yellow_taxi_trips_external`
 OPTIONS (
   format = 'PARQUET',
   uris = ['gs://taxi-data-bucket-484819-a6/*.parquet']
 );
-
-"""
+```
 
 ### Create regular table in BQ
 
-"""
+```sql
 CREATE OR REPLACE TABLE `curious-helix-484819-a6.taxi_dataset.yellow_taxi_trips`
 AS
 SELECT *
 FROM `curious-helix-484819-a6.taxi_dataset.yellow_taxi_trips_external`;
+```
 
-"""
+## Key Findings and Analysis
 
-1. 20332093
+### 1. Total Record Count
 
-2. Data read estimate for following queries in External table 0 MB vs Materialised table 155.12 MB
+**20,332,093** total records in yellow taxi trips dataset.
 
-"""
+### 2. External Table vs Materialized Table - Query Performance
+
+Data read estimate for distinct pickup locations query:
+- **External table**: 0 MB (stored in GCP bucket)
+- **Materialized table**: 155.12 MB
+
+**External table query:**
+```sql
 SELECT COUNT(DISTINCT PULocationID) as distinct_pickup_locations
 FROM `curious-helix-484819-a6.taxi_dataset.yellow_taxi_trips_external`;
+```
 
-"""
-
-"""
+**Materialized table query:**
+```sql
 SELECT COUNT(DISTINCT PULocationID) as distinct_pickup_locations
 FROM `curious-helix-484819-a6.taxi_dataset.yellow_taxi_trips`;
+```
 
-"""
+### 3. Columnar Database - Column Selection Impact
 
-3. BigQuery is a columnar database, and it only scans the specific columns requested in the query. Querying two columns (PULocationID, DOLocationID) requires reading more data than querying one column (PULocationID), leading to a higher estimated number of bytes processed.
+BigQuery is a columnar database that only scans the specific columns requested in the query. Querying two columns requires reading more data than querying one column.
 
-Estimate bytes : 155 MB
-"""
+**One column query (155 MB):**
+```sql
 SELECT PULocationID
 FROM `curious-helix-484819-a6.taxi_dataset.yellow_taxi_trips`;
+```
 
-"""
-
-Estimate bytes : 310 MB
-"""
+**Two column query (310 MB):**
+```sql
 SELECT PULocationID, DOLocationID
 FROM `curious-helix-484819-a6.taxi_dataset.yellow_taxi_trips`;
-"""
+```
 
-4. In folowing case, The WHERE fare_amount = 0 clause forces BigQuery to read the fare_amount column regardless of whether you use COUNT(*) or COUNT(fare_amount).
+### 4. WHERE Clause Column Scanning
 
-Count 8333
-"""
+The WHERE clause forces BigQuery to read specific columns regardless of the SELECT clause. This query returned **8,333** records where fare_amount equals zero.
+
+```sql
 SELECT count(*)
 FROM `curious-helix-484819-a6.taxi_dataset.yellow_taxi_trips`
 WHERE fare_amount = 0;
+```
 
-"""
+### 5. Partitioning and Clustering Strategy
 
-5. For queries that filter by tpep_dropoff_datetime and order by VendorID, the best strategy is:
-Partition by tpep_dropoff_datetime and Cluster by VendorID
+For queries that filter by `tpep_dropoff_datetime` and order by `VendorID`, the optimal approach is to partition by date and cluster by VendorID:
 
-"""
+```sql
 CREATE OR REPLACE TABLE `curious-helix-484819-a6.taxi_dataset.yellow_taxi_trips_optimized`
 PARTITION BY DATE(tpep_dropoff_datetime)
 CLUSTER BY VendorID
 AS
 SELECT * 
 FROM `curious-helix-484819-a6.taxi_dataset.yellow_taxi_trips`;
+```
 
-"""
+### 6. Performance Comparison - Optimized vs Non-Optimized
 
-6. 
-
-Estimate bytes: 310.24 MB
-"""
-
+**Without partitioning/clustering (310.24 MB):**
+```sql
 SELECT DISTINCT VendorID
 FROM `curious-helix-484819-a6.taxi_dataset.yellow_taxi_trips`
 WHERE tpep_dropoff_datetime >= '2024-03-01' 
   AND tpep_dropoff_datetime < '2024-03-16'
 ORDER BY VendorID;
+```
 
-"""
-
-Estimate bytes: 26.84 MB
-"""
+**With partitioning/clustering (26.84 MB):**
+```sql
 SELECT DISTINCT VendorID
 FROM `curious-helix-484819-a6.taxi_dataset.yellow_taxi_trips_optimized`
 WHERE tpep_dropoff_datetime >= '2024-03-01' 
   AND tpep_dropoff_datetime < '2024-03-16'
 ORDER BY VendorID;
+```
 
-"""
+**Result: ~91% reduction in data scanned with proper optimization.**
 
-7. The data storage of external table is GCP bucket, that is why it shows zero estimate in BQ.
+### 7. External Table Storage
 
-8. It is NOT always best practice to cluster your data in BigQuery, clustering helps when
-    - You frequently filter or aggregate on specific columns
-    - Queries use specific column patterns repeatedly
-    - High-cardinality columns
-    - Table size > 1 GB
+External table data is stored in the GCP bucket, which is why BigQuery shows zero estimate bytes. The storage costs are incurred at the bucket level, not BigQuery.
 
-9. SELECT COUNT(*) often shows 0 MB processed because BigQuery can answer it using table metadata, without scanning the actual data.
+### 8. When to Use Clustering
 
-"""
-SELECT count(*) from `curious-helix-484819-a6.taxi_dataset.yellow_taxi_trips`
+Clustering is NOT always best practice. It helps when:
+- You frequently filter or aggregate on specific columns
+- Queries use specific column patterns repeatedly
+- Working with high-cardinality columns
+- Table size exceeds 1 GB
 
-"""
+### 9. COUNT(*) Query Optimization
+
+SELECT COUNT(*) often shows 0 MB processed because BigQuery can answer it using table metadata, without scanning the actual data.
+
+```sql
+SELECT count(*) from `curious-helix-484819-a6.taxi_dataset.yellow_taxi_trips`;
+```
